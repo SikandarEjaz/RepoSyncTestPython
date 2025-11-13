@@ -1,0 +1,34 @@
+name: Sync from Java Repo (Manual)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Python Repo
+        uses: actions/checkout@v4
+        with:
+          path: python-repo
+          
+      - name: Checkout Java Repo
+        uses: actions/checkout@v4
+        with:
+          repository: SikandarEjaz/RepoSyncTestJava
+          token: ${{ secrets.SYNC_TOKEN }}
+          path: java-repo
+          
+      - name: Sync files from Java
+        run: |
+          mkdir -p python-repo/synced-from-java
+          cp -r java-repo/sync_folder/* python-repo/synced-from-java/
+          
+      - name: Commit and Push
+        run: |
+          cd python-repo
+          git config user.name "GitHub Action"
+          git config user.email "action@github.com"
+          git add .
+          git diff --quiet && git diff --staged --quiet || git commit -m "Manual sync from Java repo"
+          git push
