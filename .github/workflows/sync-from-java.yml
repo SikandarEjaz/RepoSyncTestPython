@@ -15,14 +15,14 @@ jobs:
       - name: Checkout Java Repo
         uses: actions/checkout@v4
         with:
-          repository: SikandarEjaz/RepoSyncTestJava.git
+          repository: SikandarEjaz/RepoSyncTestJava
           token: ${{ secrets.SYNC_TOKEN }}
           path: java-repo
           
       - name: Sync files from Java
         run: |
           mkdir -p python-repo/synced-from-java
-          cp -r java-repo/sync-folder/* python-repo/synced-from-java/
+          cp -r java-repo/sync_folder/* python-repo/synced-from-java/
           
       - name: Commit and Push
         run: |
@@ -32,4 +32,3 @@ jobs:
           git add .
           git diff --quiet && git diff --staged --quiet || git commit -m "Manual sync from Java repo"
           git push
-		  
