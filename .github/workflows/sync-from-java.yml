@@ -15,7 +15,7 @@ jobs:
       - name: Checkout Java Repo
         uses: actions/checkout@v4
         with:
-          repository: YOUR_USERNAME/YOUR_JAVA_REPO_NAME
+          repository: SikandarEjaz/RepoSyncTestJava.git
           token: ${{ secrets.SYNC_TOKEN }}
           path: java-repo
           
