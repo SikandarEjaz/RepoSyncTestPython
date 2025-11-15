@@ -1,12 +1,12 @@
-name: Sync to Java Repo
+name: Sync to Java Repo with Python-to-Java Translation
 
 on:
   push:
     branches:
       - main
     paths:
-      - 'sync_folder/**'  # Only trigger when files in sync_folder change. More foldes and files can be added later.
-  workflow_dispatch:  
+      - 'sync_folder/**'
+  workflow_dispatch:
 
 jobs:
   sync:
@@ -24,16 +24,256 @@ jobs:
           token: ${{ secrets.SYNC_TOKEN }}
           path: java-repo
 
-      - name: Sync files
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+
+      - name: Set up Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: 'temurin'
+          java-version: '17'
+
+      - name: Install ANTLR4
         run: |
-          # Copy files from Python repo to Java repo
+          cd /usr/local/lib
+          sudo curl -O https://www.antlr.org/download/antlr-4.13.1-complete.jar
+          echo 'export CLASSPATH=".:/usr/local/lib/antlr-4.13.1-complete.jar:$CLASSPATH"' >> ~/.bashrc
+          echo 'alias antlr4="java -jar /usr/local/lib/antlr-4.13.1-complete.jar"' >> ~/.bashrc
+          source ~/.bashrc
+          pip install antlr4-python3-runtime
+
+      - name: Download Python Grammar
+        run: |
+          mkdir -p parser
+          cd parser
+          # Download official Python grammar from ANTLR
+          curl -O https://raw.githubusercontent.com/antlr/grammars-v4/master/python/python3-without-actions/PythonLexer.g4
+          curl -O https://raw.githubusercontent.com/antlr/grammars-v4/master/python/python3-without-actions/PythonParser.g4
+
+      - name: Generate ANTLR Parser
+        run: |
+          cd parser
+          java -jar /usr/local/lib/antlr-4.13.1-complete.jar -Dlanguage=Python3 PythonLexer.g4 PythonParser.g4
+
+      - name: Create Python-to-Java Translator
+        run: |
+          cat > translator.py << 'TRANSLATOR_EOF'
+          import sys
+          import os
+          from antlr4 import *
+          from parser.PythonLexer import PythonLexer
+          from parser.PythonParser import PythonParser
+          from parser.PythonParserListener import PythonParserListener
+
+          class PythonToJavaTranslator(PythonParserListener):
+              def __init__(self):
+                  self.indent_level = 0
+                  self.output = []
+                  self.current_class = None
+                  self.in_method = False
+                  self.class_fields = []
+                  self.is_init_method = False
+                  
+              def get_indent(self):
+                  return "    " * self.indent_level
+              
+              def enterClassdef(self, ctx):
+                  # Get class name
+                  class_name = ctx.NAME().getText()
+                  self.current_class = class_name
+                  
+                  # Check for inheritance
+                  parent_class = ""
+                  if ctx.arglist():
+                      parent_class = " extends " + ctx.arglist().getText()
+                  
+                  self.output.append(f"public class {class_name}{parent_class} {{")
+                  self.indent_level += 1
+                  
+              def exitClassdef(self, ctx):
+                  self.indent_level -= 1
+                  self.output.append("}")
+                  self.output.append("")
+                  
+              def enterFuncdef(self, ctx):
+                  self.in_method = True
+                  method_name = ctx.NAME().getText()
+                  
+                  # Check if it's __init__ (constructor)
+                  if method_name == "__init__":
+                      self.is_init_method = True
+                      params = self.get_parameters(ctx.parameters())
+                      # Remove 'self' from parameters
+                      params = [p for p in params if p != "self"]
+                      params_str = ", ".join([f"String {p}" for p in params])  # Default to String type
+                      
+                      self.output.append(f"{self.get_indent()}public {self.current_class}({params_str}) {{")
+                      self.indent_level += 1
+                  else:
+                      params = self.get_parameters(ctx.parameters())
+                      # Remove 'self' from parameters
+                      params = [p for p in params if p != "self"]
+                      params_str = ", ".join([f"String {p}" for p in params])
+                      
+                      # Determine return type (default to void)
+                      return_type = "void"
+                      
+                      self.output.append(f"{self.get_indent()}public {return_type} {method_name}({params_str}) {{")
+                      self.indent_level += 1
+                  
+              def exitFuncdef(self, ctx):
+                  self.indent_level -= 1
+                  self.output.append(f"{self.get_indent()}}}")
+                  self.output.append("")
+                  self.in_method = False
+                  self.is_init_method = False
+              
+              def get_parameters(self, params_ctx):
+                  params = []
+                  if params_ctx and params_ctx.typedargslist():
+                      typedargslist = params_ctx.typedargslist()
+                      for tfpdef in typedargslist.tfpdef():
+                          params.append(tfpdef.NAME().getText())
+                  return params
+              
+              def enterExpr_stmt(self, ctx):
+                  if self.in_method:
+                      stmt_text = ctx.getText()
+                      
+                      # Handle self.variable = value (field initialization)
+                      if "self." in stmt_text and "=" in stmt_text:
+                          parts = stmt_text.split("=")
+                          if len(parts) == 2:
+                              var_name = parts[0].replace("self.", "").strip()
+                              value = parts[1].strip()
+                              
+                              # If in __init__, this is field initialization
+                              if self.is_init_method:
+                                  # Check if field already declared
+                                  if var_name not in self.class_fields:
+                                      self.class_fields.append(var_name)
+                              
+                              self.output.append(f"{self.get_indent()}this.{var_name} = {value};")
+                      # Handle regular assignment
+                      elif "=" in stmt_text and "self." not in stmt_text:
+                          self.output.append(f"{self.get_indent()}{stmt_text};")
+              
+              def enterReturn_stmt(self, ctx):
+                  if self.in_method:
+                      return_value = ""
+                      if ctx.testlist():
+                          return_value = ctx.testlist().getText()
+                          # Replace self. with this.
+                          return_value = return_value.replace("self.", "this.")
+                      self.output.append(f"{self.get_indent()}return {return_value};")
+              
+              def enterExpr(self, ctx):
+                  # Handle print() calls
+                  if self.in_method:
+                      expr_text = ctx.getText()
+                      if "print(" in expr_text:
+                          # Extract content inside print
+                          start = expr_text.find("print(") + 6
+                          end = expr_text.rfind(")")
+                          content = expr_text[start:end]
+                          # Replace f-strings and format
+                          content = self.convert_print_statement(content)
+                          self.output.append(f"{self.get_indent()}System.out.println({content});")
+              
+              def convert_print_statement(self, content):
+                  # Simple conversion of Python print to Java
+                  # Replace self. with this.
+                  content = content.replace("self.", "this.")
+                  
+                  # Handle f-strings (basic conversion)
+                  if content.startswith('f"') or content.startswith("f'"):
+                      # Remove f prefix
+                      content = content[1:]
+                      # Replace {var} with " + var + "
+                      import re
+                      content = re.sub(r'\{([^}]+)\}', r'" + \1 + "', content)
+                      # Clean up multiple concatenations
+                      content = content.replace('+ ""', '').replace('"" +', '')
+                  
+                  return content
+              
+              def get_java_code(self):
+                  # Add field declarations at the beginning of the class
+                  if self.class_fields:
+                      lines = self.output
+                      # Find where to insert fields (after class declaration)
+                      for i, line in enumerate(lines):
+                          if line.strip().startswith("public class"):
+                              # Insert fields after class declaration
+                              for field in self.class_fields:
+                                  lines.insert(i + 1, f"    private String {field};  // Auto-detected field")
+                              break
+                      self.output = lines
+                  
+                  return "\n".join(self.output)
+
+          def translate_python_to_java(python_file_path):
+              with open(python_file_path, 'r') as f:
+                  python_code = f.read()
+              
+              input_stream = InputStream(python_code)
+              lexer = PythonLexer(input_stream)
+              token_stream = CommonTokenStream(lexer)
+              parser = PythonParser(token_stream)
+              tree = parser.file_input()
+              
+              translator = PythonToJavaTranslator()
+              walker = ParseTreeWalker()
+              walker.walk(translator, tree)
+              
+              return translator.get_java_code()
+
+          if __name__ == "__main__":
+              if len(sys.argv) != 3:
+                  print("Usage: python translator.py <input_python_file> <output_java_file>")
+                  sys.exit(1)
+              
+              input_file = sys.argv[1]
+              output_file = sys.argv[2]
+              
+              try:
+                  java_code = translate_python_to_java(input_file)
+                  
+                  with open(output_file, 'w') as f:
+                      f.write(java_code)
+                  
+                  print(f"Translated {input_file} to {output_file}")
+              except Exception as e:
+                  print(f"Translation error: {e}")
+                  import traceback
+                  traceback.print_exc()
+          TRANSLATOR_EOF
+
+      - name: Translate Python files to Java
+        run: |
           mkdir -p java-repo/synced-from-python
-          # Check if sync_folder exists and has files
-          if [ -d "python-repo/sync_folder" ] && [ "$(ls -A python-repo/sync_folder)" ]; then
-            cp -r python-repo/sync_folder/* java-repo/synced-from-python/
-          else
-            echo "sync_folder is empty or doesn't exist"
-          fi
+          
+          # Find all Python files in sync_folder
+          find python-repo/sync_folder -name "*.py" | while read python_file; do
+            # Get relative path and convert to Java filename
+            rel_path=$(realpath --relative-to=python-repo/sync_folder "$python_file")
+            java_file="java-repo/synced-from-python/${rel_path%.py}.java"
+            
+            # Create directory if needed
+            mkdir -p "$(dirname "$java_file")"
+            
+            # Translate
+            echo "Translating: $python_file -> $java_file"
+            python translator.py "$python_file" "$java_file" || echo "Translation failed for $python_file"
+          done
+          
+          # Also copy non-Python files as before
+          find python-repo/sync_folder -type f ! -name "*.py" | while read file; do
+            rel_path=$(realpath --relative-to=python-repo/sync_folder "$file")
+            cp "$file" "java-repo/synced-from-python/$rel_path"
+          done
 
       - name: Commit and Push to Java Repo
         run: |
@@ -41,5 +281,5 @@ jobs:
           git config user.name "GitHub Action"
           git config user.email "action@github.com"
           git add .
-          git diff --quiet && git diff --staged --quiet || git commit -m "Sync from Python repo [automated]"
+          git diff --quiet && git diff --staged --quiet || git commit -m "Sync from Python repo with translation [automated]"
           git push
