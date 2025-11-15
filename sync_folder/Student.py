@@ -29,4 +29,3 @@ class Student:
         if self.grade >= 60:
             return True
         return False
-    
