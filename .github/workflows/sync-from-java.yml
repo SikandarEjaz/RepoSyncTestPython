@@ -312,13 +312,13 @@ jobs:
                   with open(output_file, 'w', encoding='utf-8') as f:
                       f.write(java_code)
                   
-                  print(f"✓ Successfully translated {input_file} to {output_file}")
+                  print(f"Successfully translated {input_file} to {output_file}")
                   print(f"\nGenerated Java code preview:")
                   print("-" * 50)
                   print(java_code[:800])
                   print("-" * 50)
               except Exception as e:
-                  print(f"✗ Translation error: {e}")
+                  print(f"Translation error: {e}")
                   import traceback
                   traceback.print_exc()
                   sys.exit(1)
@@ -349,11 +349,11 @@ jobs:
             echo "         to: $java_file"
             echo "========================================="
             if python translator.py "$python_file" "$java_file"; then
-              echo "✓ Translation successful"
+              echo "Translation successful"
               echo "File size: $(wc -c < "$java_file") bytes"
               ls -lh "$java_file"
             else
-              echo "✗ Translation failed for $python_file"
+              echo "Translation failed for $python_file"
             fi
             echo ""
           done
@@ -377,5 +377,5 @@ jobs:
             git status
             git commit -m "Sync from Python repo with translation [automated]"
             git push
-            echo "✓ Changes pushed successfully"
+            echo "Changes pushed successfully"
           fi
